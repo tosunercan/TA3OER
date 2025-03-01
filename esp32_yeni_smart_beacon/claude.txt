@@ -1,0 +1,184 @@
+#include <SPI.h>
+#include <LoRa.h>
+#include <TinyGPS++.h>
+#include <HardwareSerial.h>
+
+// LoRa Pin Tanımlamaları
+#define LORA_SS_PIN    5
+#define LORA_RST_PIN   14
+#define LORA_DI0_PIN   2
+
+// GPS için Serial2 kullanımı (ESP32)
+#define GPS_RX_PIN 16
+#define GPS_TX_PIN 17
+
+// APRS Ayarları
+const char* CALLSIGN = "TA1ABC-7";  // Çağrı işaretinizi buraya yazın
+const char* DESTINATION = "APRS";
+const char SYMBOL_TABLE = '/';       // APRS sembol tablosu
+const char SYMBOL = '>';             // Araç sembolü
+
+// Smart Beacon Parametreleri
+const float slowSpeed = 5.0;      // km/h
+const float fastSpeed = 60.0;     // km/h
+const float slowRate = 300.0;     // saniye
+const float fastRate = 60.0;      // saniye
+const float minTxDist = 100.0;    // metre
+const float minDeltaBeacon = 30.0;  // saniye
+const float turnMinDeg = 28.0;    // derece
+const float turnSlope = 255.0;    // eğim faktörü
+
+// Global değişkenler
+TinyGPSPlus gps;
+float lastLat = 0.0;
+float lastLon = 0.0;
+float lastCourse = 0.0;
+unsigned long lastBeaconTime = 0;
+float currentSpeed = 0.0;
+
+void setup() {
+  Serial.begin(115200);
+  
+  // GPS başlatma
+  Serial2.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+  
+  // LoRa başlatma
+  LoRa.setPins(LORA_SS_PIN, LORA_RST_PIN, LORA_DI0_PIN);
+  
+  if (!LoRa.begin(433E6)) {
+    Serial.println("LoRa başlatılamadı!");
+    while (1);
+  }
+  
+  // LoRa parametreleri
+  LoRa.setSpreadingFactor(7);
+  LoRa.setSignalBandwidth(125E3);
+  LoRa.setCodingRate4(5);
+  LoRa.enableCrc();
+  
+  Serial.println("APRS Smart Beacon başlatıldı!");
+}
+
+// APRS formatında konum kodlama
+String convertToAPRSFormat(double lat, double lon, float speed, float course) {
+  char aprsPacket[100];
+  
+  // Enlem hesaplama
+  char latStr[9];
+  int latDeg = abs((int)lat);
+  float latMin = (abs(lat) - latDeg) * 60;
+  snprintf(latStr, sizeof(latStr), "%02d%05.2f%c", 
+           latDeg, latMin, (lat >= 0) ? 'N' : 'S');
+
+  // Boylam hesaplama
+  char lonStr[10];
+  int lonDeg = abs((int)lon);
+  float lonMin = (abs(lon) - lonDeg) * 60;
+  snprintf(lonStr, sizeof(lonStr), "%03d%05.2f%c", 
+           lonDeg, lonMin, (lon >= 0) ? 'E' : 'W');
+
+  // Hız (knots) ve yön
+  float speedKnots = speed * 0.539957; // km/h to knots
+
+  // APRS paket formatı oluşturma
+  snprintf(aprsPacket, sizeof(aprsPacket), 
+           "%s>%s:!%s%c%s%c%03.0f/%03.0f/A=%06.0f",
+           CALLSIGN, DESTINATION,
+           latStr, SYMBOL_TABLE, lonStr, SYMBOL,
+           course, speedKnots,
+           gps.altitude.feet());
+
+  return String(aprsPacket);
+}
+
+float calculateBeaconRate(float speed) {
+  if (speed < slowSpeed) return slowRate;
+  if (speed > fastSpeed) return fastRate;
+  
+  return slowRate - ((speed - slowSpeed) * (slowRate - fastRate) / (fastSpeed - slowSpeed));
+}
+
+float calculateTurnTime(float courseDelta) {
+  if (abs(courseDelta) < turnMinDeg) return 1.0;
+  return 1.0 + (abs(courseDelta) / turnSlope);
+}
+
+float calculateDistance(float lat1, float lon1, float lat2, float lon2) {
+  const float R = 6371000; // Dünya yarıçapı (metre)
+  float phi1 = lat1 * PI / 180;
+  float phi2 = lat2 * PI / 180;
+  float deltaPhi = (lat2 - lat1) * PI / 180;
+  float deltaLambda = (lon2 - lon1) * PI / 180;
+
+  float a = sin(deltaPhi/2) * sin(deltaPhi/2) +
+          cos(phi1) * cos(phi2) *
+          sin(deltaLambda/2) * sin(deltaLambda/2);
+  float c = 2 * atan2(sqrt(a), sqrt(1-a));
+  return R * c;
+}
+
+void sendBeacon() {
+  if (gps.location.isValid()) {
+    String aprsPacket = convertToAPRSFormat(
+      gps.location.lat(),
+      gps.location.lng(),
+      gps.speed.kmph(),
+      gps.course.deg()
+    );
+                       
+    LoRa.beginPacket();
+    LoRa.print(aprsPacket);
+    LoRa.endPacket();
+    
+    Serial.println("APRS Beacon gönderildi: " + aprsPacket);
+    
+    lastLat = gps.location.lat();
+    lastLon = gps.location.lng();
+    lastCourse = gps.course.deg();
+    lastBeaconTime = millis();
+  }
+}
+
+void loop() {
+  while (Serial2.available() > 0) {
+    gps.encode(Serial2.read());
+  }
+  
+  if (gps.location.isValid()) {
+    currentSpeed = gps.speed.kmph();
+    float currentLat = gps.location.lat();
+    float currentLon = gps.location.lng();
+    float currentCourse = gps.course.deg();
+    
+    unsigned long currentTime = millis();
+    float timeSinceLastBeacon = (currentTime - lastBeaconTime) / 1000.0;
+    
+    // Mesafe kontrolü
+    float distance = calculateDistance(lastLat, lastLon, currentLat, currentLon);
+    
+    // Yön değişimi kontrolü
+    float courseDelta = abs(currentCourse - lastCourse);
+    if (courseDelta > 180) courseDelta = 360 - courseDelta;
+    
+    // Beacon gönderme kararı
+    float beaconRate = calculateBeaconRate(currentSpeed);
+    float turnFactor = calculateTurnTime(courseDelta);
+    float adjustedRate = beaconRate / turnFactor;
+    
+    bool shouldSendBeacon = false;
+    
+    // Minimum mesafe kontrolü
+    if (distance >= minTxDist) {
+      shouldSendBeacon = true;
+    }
+    
+    // Zaman kontrolü
+    if (timeSinceLastBeacon >= adjustedRate && timeSinceLastBeacon >= minDeltaBeacon) {
+      shouldSendBeacon = true;
+    }
+    
+    if (shouldSendBeacon) {
+      sendBeacon();
+    }
+  }
+}

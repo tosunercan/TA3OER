@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>APRS Tracker Interface</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f0f0f0;
+        }
+        .message-container {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-bottom: 10px;
+            background-color: white;
+        }
+        .message {
+            margin: 5px 0;
+            padding: 5px;
+            border-radius: 5px;
+        }
+        .received {
+            background-color: #e3f2fd;
+            color: #1565c0;
+        }
+        .sent {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+        .aprs {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+        }
+        .input-container {
+            display: flex;
+            gap: 10px;
+        }
+        input[type="text"] {
+            flex-grow: 1;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        #sendBtn {
+            background-color: #2196f3;
+            color: white;
+        }
+        #gpsBtn {
+            background-color: #f44336;
+            color: white;
+        }
+        #gpsBtn.active {
+            background-color: #2196f3;
+        }
+    </style>
+</head>
+<body>
+    <h2>APRS Tracker Interface</h2>
+    <div class="message-container" id="messages"></div>
+    <div class="input-container">
+        <input type="text" id="messageInput" placeholder="Enter message...">
+        <button id="sendBtn">Send</button>
+        <button id="gpsBtn">GPS Location</button>
+    </div>
+
+    <script>
+        let ws = new WebSocket('ws://' + window.location.hostname + '/ws');
+        const messagesDiv = document.getElementById('messages');
+        const messageInput = document.getElementById('messageInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const gpsBtn = document.getElementById('gpsBtn');
+
+        // Sayfa yüklendiğinde mesaj geçmişini göster
+        window.onload = function() {
+            ws.onopen = function() {
+                ws.send('REQUEST_HISTORY');
+            };
+        };
+
+        ws.onmessage = function(event) {
+            const data = event.data;
+            let messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+
+            if (data.startsWith('RECEIVED:')) {
+                messageDiv.className += ' received';
+                messageDiv.textContent = 'Received: ' + data.substring(9);
+            } else if (data.startsWith('SENT:')) {
+                messageDiv.className += ' sent';
+                messageDiv.textContent = 'Sent: ' + data.substring(5);
+            } else if (data.startsWith('GPS_STATUS:')) {
+                const status = data.substring(11);
+                gpsBtn.className = status === '1' ? 'active' : '';
+                return;
+            } else if (data.startsWith('GPS_DATA:')) {
+                messageDiv.className += ' aprs';
+                messageDiv.textContent = 'GPS Location: ' + data.substring(9);
+            }
+
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        };
+
+        sendBtn.onclick = function() {
+            if (messageInput.value) {
+                ws.send(messageInput.value);
+                messageInput.value = '';
+            }
+        };
+
+        gpsBtn.onclick = function() {
+            ws.send('GPS:REQUEST');
+        };
+
+        messageInput.onkeypress = function(e) {
+            if (e.key === 'Enter') {
+                sendBtn.click();
+            }
+        };
+    </script>
+</body>
+</html>
