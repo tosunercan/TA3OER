@@ -1,7 +1,5 @@
 Basic Features
 
-Software : Open Source (Thanks richonguzman CA2RXU)
-
 Dimensions : 99.9 mm x 40.9 mm x 26 mm
 
 IDE : Arduino & VSCode & Webflasher
